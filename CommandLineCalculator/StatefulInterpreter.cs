@@ -1,15 +1,135 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
+using System.Runtime.Serialization.Formatters.Binary;
 
 namespace CommandLineCalculator
 {
+    public class Serializer
+    {
+        private readonly BinaryFormatter formatter = new BinaryFormatter();
+        
+        public byte[] Serialize(object @object)
+        {
+            using var memoryStream = new MemoryStream();
+            formatter.Serialize(memoryStream, @object);
+            return memoryStream.ToArray();
+        }
+
+        public object Deserialize(byte[] bytes)
+        {
+            using var memoryStream = new MemoryStream();
+            memoryStream.Write(bytes, 0, bytes.Length);
+            memoryStream.Seek(0, SeekOrigin.Begin);
+            return formatter.Deserialize(memoryStream);
+        }
+    }
+    
+    [Serializable]
+    public class State
+    {
+        [NonSerialized]
+        protected Storage Storage;
+        [NonSerialized]
+        protected readonly Serializer Serializer = new Serializer();
+        public Queue<string> LoadedQueries;
+        public Queue<string> QueriesSoFar;
+        public int LinesToSkip;
+        public int LinesSoFar;
+        public long? LastRandomNumber;
+
+        public static State GetFromStorageOrDefault(Storage storage)
+        {
+            var state = new State(storage);
+            if (!state.TryLoadFromStorage())
+                state.LoadFromData(new Queue<string>(), 0, null);
+            return state;
+        }
+
+        protected State(Storage storage) => Storage = storage;
+
+        protected void LoadFromData(Queue<string> loadedQueries, int linesToSkip,
+            long? lastRandomNumber)
+        {
+            LoadedQueries = loadedQueries;
+            QueriesSoFar = new Queue<string>(loadedQueries);
+            LinesToSkip = linesToSkip;
+            LinesSoFar = linesToSkip;
+            LastRandomNumber = lastRandomNumber;
+        }
+
+        protected void LoadFromState(State other)
+        {
+            LoadFromData(other.QueriesSoFar, other.LinesSoFar, other.LastRandomNumber);
+        }
+        
+        public void ClearHistory()
+        {
+            LoadFromData(new Queue<string>(), 0, LastRandomNumber);
+            SaveToStorage();
+        }
+
+        public void SaveToStorage()
+        {
+            var bytes = Serializer.Serialize(this);
+            Storage.Write(bytes);
+        }
+
+        public bool TryLoadFromStorage()
+        {
+            var bytes = Storage.Read();
+            if (bytes.Length <= 0)
+                return false;
+            LoadFromState((State) Serializer.Deserialize(bytes));
+            return true;
+        }
+    }
+    
+    public sealed class StatefulUserConsoleWrapper : UserConsole
+    {
+        private readonly UserConsole console;
+        private readonly State state;
+
+        public StatefulUserConsoleWrapper(UserConsole original, State state)
+        {
+            console = original;
+            this.state = state;
+        }
+        
+        public override string ReadLine()
+        {
+            if (state.LoadedQueries.Count > 0)
+                return state.LoadedQueries.Dequeue();
+            var query = console.ReadLine();
+            state.QueriesSoFar.Enqueue(query);
+            state.SaveToStorage();
+            return query;
+        }
+
+        public override void WriteLine(string content)
+        {
+            if (state.LinesToSkip > 0)
+                state.LinesToSkip--;
+            else
+            {
+                console.WriteLine(content);
+                state.LinesSoFar++;
+                state.SaveToStorage();
+            }
+        }
+    }
+    
     public sealed class StatefulInterpreter : Interpreter
     {
         private static CultureInfo Culture => CultureInfo.InvariantCulture;
+        private State state;
 
         public override void Run(UserConsole userConsole, Storage storage)
         {
-            var x = 420L;
+            state = State.GetFromStorageOrDefault(storage);
+            userConsole = new StatefulUserConsoleWrapper(userConsole, state);
+            state.LastRandomNumber ??= 420L;
             while (true)
             {
                 var input = userConsole.ReadLine();
@@ -27,12 +147,13 @@ namespace CommandLineCalculator
                         Help(userConsole);
                         break;
                     case "rand":
-                        x = Random(userConsole, x);
+                        state.LastRandomNumber = Random(userConsole, state.LastRandomNumber.Value);
                         break;
                     default:
                         userConsole.WriteLine("Такой команды нет, используйте help для списка команд");
                         break;
                 }
+                state.ClearHistory();
             }
         }
 
