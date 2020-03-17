@@ -64,10 +64,15 @@ namespace CommandLineCalculator
             LoadFromData(other.QueriesSoFar, other.LinesSoFar, other.LastRandomNumber);
         }
         
-        public void ClearHistory()
+        public void ClearCommand()
         {
             LoadFromData(new Queue<string>(), 0, LastRandomNumber);
             SaveToStorage();
+        }
+
+        public void ClearStorage()
+        {
+            Storage.Write(new byte[0]);
         }
 
         public void SaveToStorage()
@@ -136,6 +141,7 @@ namespace CommandLineCalculator
                 switch (input.Trim())
                 {
                     case "exit":
+                        state.ClearStorage();
                         return;
                     case "add":
                         Add(userConsole);
@@ -153,7 +159,7 @@ namespace CommandLineCalculator
                         userConsole.WriteLine("Такой команды нет, используйте help для списка команд");
                         break;
                 }
-                state.ClearHistory();
+                state.ClearCommand();
             }
         }
 
